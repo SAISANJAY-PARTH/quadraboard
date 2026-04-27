@@ -166,7 +166,10 @@ except Exception as e:
     st.error(f"❌ Data fetch error: {e}")
     st.stop()
 
-fast = stock.fast_info
+try:
+    fast = stock.fast_info
+except:
+    fast = {}
 
 # ---------------------------
 # INDICATORS ENGINE
@@ -570,7 +573,7 @@ adx_v     = last["ADX"]
 atr_v     = last["True_ATR"]
 bb_pct    = last["BB_Pct"]
 cmf_v     = last["CMF"] if not pd.isna(last["CMF"]) else 0
-obv_slope = (df["OBV"].iloc[-1] - df["OBV"].iloc[-5]) / (df["OBV"].iloc[-5] + 1e-10) if len(df) > 5 else 0
+obv_slope = df["OBV"].iloc[-1] - df["OBV"].iloc[-5] if len(df) > 5 else 0
 cci_v     = last["CCI"] if not pd.isna(last["CCI"]) else 0
 mfi_v     = last["MFI"] if not pd.isna(last["MFI"]) else 50
 will_r    = last["WilliamsR"] if not pd.isna(last["WilliamsR"]) else -50
@@ -593,7 +596,7 @@ adx_trending  = adx_v > 20
 adx_strong    = adx_v > 25
 adx_very_weak = adx_v < 15
 # ADX slope (trend strength direction)
-adx_slope = df["ADX"].iloc[-1] - df["ADX"].iloc[-5]
+adx_slope = df["ADX"].iloc[-1] - df["ADX"].iloc[-5] if len(df) > 5 else 0
 adx_rising = adx_slope > 0
 
 # Price range tightness: how wide is BB relative to its mean (squeeze detection)
@@ -715,15 +718,20 @@ elif adx_v > 20 and adx_rising:
     strategy_mode = "TREND FOLLOWING"
 else:
     strategy_mode = "NO TRADE"
+    # ── STRATEGY MODE OVERRIDE (NEW) ──
+
 mid_price = (last["Support"] + last["Resistance"]) / 2
-mid_range = abs(price_cur - mid_price) < atr_v# 2 of 3 range signals = confirmed range
+mid_range = abs(price_cur - mid_price) < (atr_v * 1.2)# 2 of 3 range signals = confirmed range
 is_weak_trend   = not adx_trending            # ADX < 20
 
-# ── FINAL SIGNAL LOGIC (FIXED) ──
+# ===========================================================
+# 🧠 CLEAN DECISION ENGINE (FINAL FIXED VERSION)
+# ===========================================================
+
+# ── RAW SIGNAL ──
 total     = bull_score + bear_score
 bull_pct  = int((bull_score / max(total, 1)) * 100)
 
-# Step 1: Raw score-based signal
 if bull_score >= 9:
     raw_signal = "STRONG BUY"
 elif bull_score >= 6:
@@ -735,63 +743,85 @@ elif bear_score >= 6:
 else:
     raw_signal = "WAIT"
 
-# Step 2: Apply ADX gate — overrides trend signals when market has no trend
-# FIX: This is the critical correction from your analysis
-if is_range_market:
-    mid_price = (last["Support"] + last["Resistance"]) / 2
-    mid_range = abs(price_cur - mid_price) < atr_v
 
-    # 🚫 Worst zone filter
+# ── INITIAL ASSIGNMENT ──
+final_signal = raw_signal
+signal_override = None
+
+# ===========================================================
+# 🧱 1. STRUCTURE FILTER (FIRST)
+# ===========================================================
+if strategy_mode == "NO TRADE":
+    final_signal = "WAIT"
+    signal_override = "⚠️ No clear structure. Skip trades."
+
+# ===========================================================
+# 📦 2. RANGE LOGIC (HIGHEST PRIORITY)
+# ===========================================================
+elif is_range_market:
+
     if mid_range:
-        final_signal = "WAIT (Mid-range — no edge)"
-        signal_override = (
-            f"⚠️ Price stuck in middle of range. "
-            f"No reward-risk edge. Avoid trading."
-        )
+        final_signal = "WAIT"
+        signal_override = "⚠️ Mid-range. No edge. Avoid trades."
 
     else:
-        # ✅ Only allow trades at extremes
-        if raw_signal in ("STRONG BUY", "BUY"):
-            final_signal = "RANGE-BOUND (Buy near support ONLY)"
-            signal_override = (
-                f"⚠️ Range market (ADX={adx_v:.1f}). "
-                f"Only buy near support — not at current price."
-            )
+        final_signal = "RANGE"
 
-        elif raw_signal in ("STRONG SELL", "SELL"):
-            final_signal = "RANGE-BOUND (Sell near resistance ONLY)"
-            signal_override = (
-                f"⚠️ Range market (ADX={adx_v:.1f}). "
-                f"Only sell near resistance — not at current price."
-            )
-
+        if raw_signal in ["BUY", "STRONG BUY"]:
+            signal_override = "📦 Range: Buy ONLY near support."
+        elif raw_signal in ["SELL", "STRONG SELL"]:
+            signal_override = "📦 Range: Sell ONLY near resistance."
         else:
-            final_signal = "RANGE-BOUND"
-            signal_override = "Market sideways. Wait for extremes or breakout."
+            signal_override = "📦 Sideways market. Wait for extremes."
 
-elif is_weak_trend or not adx_rising:
-    # ADX < 20 but not full range — demote strong signals to normal
+# ===========================================================
+# 📉 3. WEAK TREND ADJUSTMENT
+# ===========================================================
+elif is_weak_trend:
+
     if raw_signal == "STRONG BUY":
-        final_signal = "BUY (Weak Trend)"
-        signal_override = f"⚠️ ADX={adx_v:.1f} < 20 — downgraded STRONG BUY → BUY. Use smaller size."
+        final_signal = "BUY"
+        signal_override = f"⚠️ Weak trend (ADX={adx_v:.1f}). Reduced confidence."
     elif raw_signal == "STRONG SELL":
-        final_signal = "SELL (Weak Trend)"
-        signal_override = f"⚠️ ADX={adx_v:.1f} < 20 — downgraded STRONG SELL → SELL. Use smaller size."
-    else:
-        final_signal = raw_signal
-        signal_override = None
-else:
-    final_signal   = raw_signal
-    signal_override = None
-# Entry confirmation filter
-# 🎯 Entry confirmation (SOFT filter, not override)
+        final_signal = "SELL"
+        signal_override = f"⚠️ Weak trend (ADX={adx_v:.1f}). Reduced confidence."
+
+# ===========================================================
+# ⚡ 4. MOMENTUM CONFLICT FILTER (SMART)
+# ===========================================================
+momentum_conflict_bear = (rsi_v > 60 and macd_v > macd_sig)
+momentum_conflict_bull = (rsi_v < 40 and macd_v < macd_sig)
+
+if "SELL" in final_signal and momentum_conflict_bear:
+    final_signal = "WAIT"
+    signal_override = "⚠️ Bearish setup but momentum bullish. Wait."
+
+if "BUY" in final_signal and momentum_conflict_bull:
+    final_signal = "WAIT"
+    signal_override = "⚠️ Bullish setup but momentum weak. Wait."
+
+# ===========================================================
+# 📊 5. ADX QUALITY FILTER (FINAL GATE)
+# ===========================================================
+if adx_v < 18:
+    final_signal = "WAIT"
+    signal_override = f"⚠️ ADX={adx_v:.1f} → No real trend."
+
+elif adx_v < 22:
+    if "STRONG" in final_signal:
+        final_signal = final_signal.replace("STRONG ", "")
+        signal_override = f"⚠️ ADX={adx_v:.1f} → Strength downgraded."
+
+# ===========================================================
+# 🎯 6. ENTRY CONFIRMATION (SOFT ONLY)
+# ===========================================================
 entry_warning = None
 
 if "SELL" in final_signal and not bearish_rejection:
-    entry_warning = "⚠️ Weak bearish confirmation (no rejection candle)"
+    entry_warning = "⚠️ Weak bearish candle confirmation"
 
 if "BUY" in final_signal and not bullish_rejection:
-    entry_warning = "⚠️ Weak bullish confirmation (no rejection candle)"
+    entry_warning = "⚠️ Weak bullish candle confirmation"
     
 # ── TRADE PLAN (ATR-based) ──
 col_a, col_b = st.columns(2)
@@ -835,7 +865,8 @@ with col_a:
     elif "SELL" in final_signal:
         st.error(f"🔴 {final_signal}")
 
-    elif "RANGE-BOUND" in final_signal:
+    elif "RANGE" in final_signal:
+    st.info(f"📦 {final_signal}")
         if "ONLY" in final_signal:
             st.warning(f"📦 {final_signal}")
         else:
@@ -970,7 +1001,7 @@ Your indicators are giving **conflicting signals** because the market is NOT tre
 - Price breaks out of BB with volume expansion
 - OBV confirms the breakout direction
         """)
-    elif is_weak_trend or not adx_rising:
+    elif is_weak_trend:
         st.markdown(f"""
 ### ⚠️ Weak Trend Environment
 
