@@ -853,33 +853,26 @@ with col_a:
     st.caption(f"🧭 Strategy Mode: {strategy_mode}")
 
     # 🎯 SIGNAL DISPLAY
-    if final_signal == "STRONG BUY":
-        st.success(f"🚀 {final_signal}")
+if final_signal == "STRONG BUY":
+    st.success(f"🚀 {final_signal}")
 
-    elif "BUY" in final_signal:
-        st.success(f"🟢 {final_signal}")
+elif final_signal == "BUY":
+    st.success(f"🟢 {final_signal}")
 
-    elif final_signal == "STRONG SELL":
-        st.error(f"🔻 {final_signal}")
+elif final_signal == "STRONG SELL":
+    st.error(f"🔻 {final_signal}")
 
-    elif "SELL" in final_signal:
-        st.error(f"🔴 {final_signal}")
+elif final_signal == "SELL":
+    st.error(f"🔴 {final_signal}")
 
-    elif "RANGE" in final_signal:
-    st.info(f"📦 {final_signal}")
-        if "ONLY" in final_signal:
-            st.warning(f"📦 {final_signal}")
-        else:
-            st.info(f"📦 {final_signal}")
+elif final_signal == "RANGE":
+    st.info("📦 RANGE — Market sideways. Trade extremes only.")
 
-    elif "WAIT" in final_signal:
-        if "Mid-range" in final_signal:
-            st.error(f"⛔ {final_signal}")
-        else:
-            st.warning(f"⚠️ {final_signal}")
+elif final_signal == "WAIT":
+    st.warning(f"⚠️ {final_signal}")
 
-    else:
-        st.warning("⚠️ WAIT — No Clear Setup")
+else:
+    st.warning("⚠️ WAIT — No Clear Setup")
 
     # ⚠️ Entry Confirmation
     if entry_warning:
