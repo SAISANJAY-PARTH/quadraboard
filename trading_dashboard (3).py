@@ -761,9 +761,15 @@ elif bear_score >= 6:
 else:
     raw_signal = "WAIT"
 
-
+final_signal = "WAIT"
 # ── INITIAL ASSIGNMENT ──
 final_signal = raw_signal
+entry, sl, target, target2 = None, None, None, None
+rr = 2.5
+
+is_range = "RANGE" in final_signal
+is_buy   = "BUY" in final_signal
+is_sell  = "SELL" in final_signal
 signal_override = None
 
 # ===========================================================
