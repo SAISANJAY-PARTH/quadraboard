@@ -589,6 +589,24 @@ body = abs(last_candle["Close"] - last_candle["Open"])
 bearish_rejection = upper_wick > body * 1.5 and last_candle["Close"] < last_candle["Open"]
 bullish_rejection = lower_wick > body * 1.5 and last_candle["Close"] > last_candle["Open"]
 
+entry, sl, target, target2 = None, None, None, None
+rr = 2.5
+
+is_range = "RANGE" in final_signal
+is_buy   = "BUY" in final_signal
+is_sell  = "SELL" in final_signal
+
+if is_buy and not is_range:
+    entry   = price_cur
+    sl      = price_cur - (atr_v * 1.5)
+    target  = price_cur + (atr_v * rr)
+    target2 = price_cur + (atr_v * rr * 1.6)
+
+elif is_sell and not is_range:
+    entry   = price_cur
+    sl      = price_cur + (atr_v * 1.5)
+    target  = price_cur - (atr_v * rr)
+    target2 = price_cur - (atr_v * rr * 1.6)
 # ── MARKET STRUCTURE ANALYSIS ──
 # Detect range / sideways condition
 # ADX < 20 = no trend; 15-25 = transitional; >25 = trending
