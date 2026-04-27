@@ -773,6 +773,12 @@ elif is_range_market:
             signal_override = "📦 Range: Sell ONLY near resistance."
         else:
             signal_override = "📦 Sideways market. Wait for extremes."
+# ===========================================================
+# 🔄 2.5 PULLBACK DETECTION (NEW)
+# ===========================================================
+elif pullback_active and price_cur < ema200_v:
+    final_signal = "PULLBACK"
+    signal_override = "⚠️ Bearish trend + bullish pullback. Wait for short entry."
 
 # ===========================================================
 # 📉 3. WEAK TREND ADJUSTMENT
@@ -823,29 +829,7 @@ if "SELL" in final_signal and not bearish_rejection:
 if "BUY" in final_signal and not bullish_rejection:
     entry_warning = "⚠️ Weak bullish candle confirmation"
     
-# ── TRADE PLAN (ATR-based) ──
 col_a, col_b = st.columns(2)
-entry, sl, target, target2 = None, None, None, None
-rr = 2.5
-
-is_range = "RANGE" in final_signal
-is_buy   = "BUY"  in final_signal
-is_sell  = "SELL" in final_signal
-
-if is_buy and not is_range:
-    entry   = price_cur
-    sl      = price_cur - (atr_v * 1.5)
-    target  = price_cur + (atr_v * rr)
-    target2 = price_cur + (atr_v * rr * 1.6)
-elif is_sell and not is_range:
-    entry   = price_cur
-    sl      = price_cur + (atr_v * 1.5)
-    target  = price_cur - (atr_v * rr)
-    target2 = price_cur - (atr_v * rr * 1.6)
-elif is_range:
-    # Range trade plan: fade extremes
-    support_lvl    = last["Support"]
-    resistance_lvl = last["Resistance"]
 
 with col_a:
 
@@ -853,26 +837,20 @@ with col_a:
     st.caption(f"🧭 Strategy Mode: {strategy_mode}")
 
     # 🎯 SIGNAL DISPLAY
-if final_signal == "STRONG BUY":
-    st.success(f"🚀 {final_signal}")
-
-elif final_signal == "BUY":
-    st.success(f"🟢 {final_signal}")
-
-elif final_signal == "STRONG SELL":
-    st.error(f"🔻 {final_signal}")
-
-elif final_signal == "SELL":
-    st.error(f"🔴 {final_signal}")
-
-elif final_signal == "RANGE":
-    st.info("📦 RANGE — Market sideways. Trade extremes only.")
-
-elif final_signal == "WAIT":
-    st.warning(f"⚠️ {final_signal}")
-
-else:
-    st.warning("⚠️ WAIT — No Clear Setup")
+    if final_signal == "STRONG BUY":
+        st.success(f"🚀 {final_signal}")
+    elif final_signal == "BUY":
+        st.success(f"🟢 {final_signal}")
+    elif final_signal == "STRONG SELL":
+        st.error(f"🔻 {final_signal}")
+    elif final_signal == "SELL":
+        st.error(f"🔴 {final_signal}")
+    elif final_signal == "RANGE":
+        st.info("📦 RANGE — Market sideways. Trade extremes only.")
+    elif final_signal == "PULLBACK":
+        st.warning("🔄 PULLBACK — Trend intact, wait for continuation entry.")
+    else:
+        st.warning("⚠️ WAIT — No Clear Setup")
 
     # ⚠️ Entry Confirmation
     if entry_warning:
@@ -881,53 +859,53 @@ else:
     # 🔔 Override Display
     if signal_override:
         st.markdown(f"""
-<div style="background:#1a1f2e; border-left:4px solid #FFD700; border-radius:6px; padding:10px 14px; margin-top:8px;">
-<b>🔔 Signal Override</b><br><small>{signal_override}</small>
-</div>
-""", unsafe_allow_html=True)
+        <div style="background:#1a1f2e; border-left:4px solid #FFD700; border-radius:6px; padding:10px 14px; margin-top:8px;">
+        <b>🔔 Signal Override</b><br><small>{signal_override}</small>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # 📊 Metrics (ONLY ONCE)
-    st.metric("Bull Score", f"{bull_score}", f"{bull_pct}% bullish")
-    st.metric("Bear Score", f"{bear_score}", f"{100-bull_pct}% bearish")
-    st.metric("ADX", f"{adx_v:.1f}", "Trending" if adx_trending else "Range/Choppy")
+    # 📊 Metrics (INSIDE column, not global)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Bull Score", f"{bull_score}", f"{bull_pct}% bullish")
+    m2.metric("Bear Score", f"{bear_score}", f"{100-bull_pct}% bearish")
+    m3.metric("ADX", f"{adx_v:.1f}", "Trending" if adx_trending else "Range")
 
     # 🎯 Trade Plan
     if entry and not is_range:
         st.markdown(f"""
-| Level | Price |
-|-------|-------|
-| Entry | {symbol}{entry:.2f} |
-| Stop Loss | {symbol}{sl:.2f} |
-| Target 1 | {symbol}{target:.2f} |
-| Target 2 | {symbol}{target2:.2f} |
-| R:R Ratio | 1:{rr} |
+        | Level | Price |
+        |-------|-------|
+        | Entry | {symbol}{entry:.2f} |
+        | Stop Loss | {symbol}{sl:.2f} |
+        | Target 1 | {symbol}{target:.2f} |
+        | Target 2 | {symbol}{target2:.2f} |
+        | R:R Ratio | 1:{rr} |
         """)
 
     elif is_range:
         st.markdown(f"""
-**📦 Range Trade Levels**
-| Level | Price |
-|-------|-------|
-| Support | {symbol}{last['Support']:.2f} |
-| Resistance | {symbol}{last['Resistance']:.2f} |
-| Mid | {symbol}{((last['Support'] + last['Resistance']) / 2):.2f} |
+        **📦 Range Trade Levels**
+        | Level | Price |
+        |-------|-------|
+        | Support | {symbol}{last['Support']:.2f} |
+        | Resistance | {symbol}{last['Resistance']:.2f} |
+        | Mid | {symbol}{((last['Support'] + last['Resistance']) / 2):.2f} |
         """)
-        st.info("💡 Range Strategy: Buy support, sell resistance. Avoid mid-zone.")
+        st.info("💡 Buy support, sell resistance. Avoid mid-zone.")
+
 
 with col_b:
+
     st.markdown("**Signal Breakdown**")
 
-    # Show range evidence if detected
     if range_evidence:
         with st.expander(f"📦 Range Evidence ({len(range_evidence)}/3 signals triggered)", expanded=True):
             for ev in range_evidence:
                 st.warning(f"• {ev}")
 
     for s in signals:
-        if isinstance(s, tuple):
-            text, stype = s
-        else:
-            text, stype = s, "neutral"
+        text, stype = s if isinstance(s, tuple) else (s, "neutral")
+
         if stype == "bull":
             st.success(text)
         elif stype == "bear":
