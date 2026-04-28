@@ -1067,7 +1067,7 @@ try:
             current  = float(df_port["Portfolio Value"].iloc[-1])
             invested = qty * buy
             pnl      = current - invested
-            
+            pnl_pct  = (pnl / (invested + 1e-10)) * 100
 
             df_port["Peak"]     = df_port["Portfolio Value"].cummax()
             df_port["Drawdown"] = (df_port["Portfolio Value"] - df_port["Peak"]) / (df_port["Peak"] + 1e-10) * 100
