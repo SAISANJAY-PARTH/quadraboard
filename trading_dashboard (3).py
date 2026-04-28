@@ -53,7 +53,7 @@ This tool is for **educational and informational purposes only** and should NOT 
 
 @st.cache_data(ttl=3600)
 def search_tickers(query):
-    import urllib.request, json
+    import urllib.request, json, urllib.parse
     query = query.strip()
     if not query:
         return []
@@ -313,8 +313,264 @@ for i in range(len(df)):
                 af = min(af + 0.02, max_af)
 df["PSAR"] = psar
 
+# ===========================================================
+# 🧠 MULTI-FACTOR DECISION ENGINE — compute ALL variables first
+# ===========================================================
+
+last      = df.iloc[-1]
+price_cur = last["Close"]
+ema20_v   = last["EMA20"]
+ema50_v   = last["EMA50"]
+ema200_v  = last["EMA200"]
+rsi_v     = last["RSI"]
+macd_v    = last["MACD"]
+macd_sig  = last["MACD_Signal"]
+adx_v     = last["ADX"]
+atr_v     = last["True_ATR"]
+bb_pct    = last["BB_Pct"]
+cmf_v     = last["CMF"] if not pd.isna(last["CMF"]) else 0
+obv_slope = df["OBV"].iloc[-1] - df["OBV"].iloc[-5] if len(df) > 5 else 0
+cci_v     = last["CCI"] if not pd.isna(last["CCI"]) else 0
+mfi_v     = last["MFI"] if not pd.isna(last["MFI"]) else 50
+will_r    = last["WilliamsR"] if not pd.isna(last["WilliamsR"]) else -50
+st_dir    = last["ST_Dir"]
+psar_v    = last["PSAR"]
+
+# Candle structure
+last_candle = df.iloc[-1]
+upper_wick = last_candle["High"] - max(last_candle["Close"], last_candle["Open"])
+lower_wick = min(last_candle["Close"], last_candle["Open"]) - last_candle["Low"]
+body = abs(last_candle["Close"] - last_candle["Open"])
+bearish_rejection = upper_wick > body * 1.5 and last_candle["Close"] < last_candle["Open"]
+bullish_rejection = lower_wick > body * 1.5 and last_candle["Close"] > last_candle["Open"]
+
+# ── MARKET STRUCTURE ANALYSIS ──
+adx_trending  = adx_v > 20
+adx_strong    = adx_v > 25
+adx_very_weak = adx_v < 15
+adx_slope     = df["ADX"].iloc[-1] - df["ADX"].iloc[-5] if len(df) > 5 else 0
+adx_rising    = adx_slope > 0
+
+bb_width_now  = last["BB_Width"] if not pd.isna(last["BB_Width"]) else 0
+bb_width_avg  = df["BB_Width"].rolling(50).mean().iloc[-1]
+if pd.isna(bb_width_avg):
+    bb_width_avg = bb_width_now
+bb_squeeze    = bb_width_now < bb_width_avg * 0.7
+
+ema_spread_pct = abs(ema20_v - ema50_v) / (ema50_v + 1e-10) * 100
+ema_compressed = ema_spread_pct < 1.5
+
+pullback_active = (
+    price_cur > ema20_v and
+    price_cur < ema50_v and
+    rsi_v > 50 and
+    macd_v > macd_sig
+)
+
+# ── SCORING SYSTEM ──
+bull_score = 0
+bear_score = 0
+signals    = []
+
+# — Trend (max 6 points) —
+if price_cur > ema200_v:
+    bull_score += 2; signals.append(("✅ Price > EMA200 (Uptrend)", "bull"))
+else:
+    bear_score += 2; signals.append(("❌ Price < EMA200 (Downtrend)", "bear"))
+
+if ema20_v > ema50_v > ema200_v:
+    bull_score += 2; signals.append(("✅ EMA stack bullish (20>50>200)", "bull"))
+elif ema20_v < ema50_v < ema200_v:
+    bear_score += 2; signals.append(("❌ EMA stack bearish (20<50<200)", "bear"))
+else:
+    signals.append(("⚠️ EMA stack mixed — possible transition/range", "neutral"))
+
+if st_dir == 1:
+    bull_score += 1; signals.append(("✅ Supertrend Bullish", "bull"))
+else:
+    bear_score += 1; signals.append(("❌ Supertrend Bearish", "bear"))
+
+if price_cur > psar_v:
+    bull_score += 1; signals.append(("✅ Price above PSAR", "bull"))
+else:
+    bear_score += 1; signals.append(("❌ Price below PSAR", "bear"))
+
+# — Momentum (max 4 points) —
+if 50 < rsi_v < 70:
+    bull_score += 2; signals.append((f"✅ RSI bullish zone ({rsi_v:.1f})", "bull"))
+elif rsi_v > 70:
+    signals.append((f"⚠️ RSI Overbought ({rsi_v:.1f})", "neutral"))
+elif 30 < rsi_v < 50:
+    bear_score += 2; signals.append((f"❌ RSI bearish zone ({rsi_v:.1f})", "bear"))
+elif rsi_v < 30:
+    signals.append((f"⚠️ RSI Oversold ({rsi_v:.1f})", "neutral"))
+
+if macd_v > macd_sig:
+    bull_score += 1; signals.append(("✅ MACD bullish crossover", "bull"))
+else:
+    bear_score += 1; signals.append(("❌ MACD bearish crossover", "bear"))
+
+if -20 > will_r > -50:
+    bull_score += 1; signals.append((f"✅ Williams %R neutral-bull ({will_r:.1f})", "bull"))
+elif will_r > -20:
+    signals.append((f"⚠️ Williams %R Overbought ({will_r:.1f})", "neutral"))
+elif will_r < -80:
+    signals.append((f"⚠️ Williams %R Oversold ({will_r:.1f})", "neutral"))
+else:
+    bear_score += 1; signals.append((f"❌ Williams %R bearish zone ({will_r:.1f})", "bear"))
+
+# — Volume / Flow (max 3 points) —
+if cmf_v > 0.05:
+    bull_score += 1; signals.append(("✅ CMF positive (buying pressure)", "bull"))
+elif cmf_v < -0.05:
+    bear_score += 1; signals.append(("❌ CMF negative (selling pressure)", "bear"))
+else:
+    signals.append((f"⚠️ CMF near zero ({cmf_v:.3f}) — neutral flow", "neutral"))
+
+if obv_slope > 0:
+    bull_score += 1; signals.append(("✅ OBV rising (accumulation)", "bull"))
+else:
+    bear_score += 1; signals.append(("❌ OBV falling (distribution)", "bear"))
+
+if mfi_v > 60:
+    bull_score += 1; signals.append((f"✅ MFI bullish ({mfi_v:.1f})", "bull"))
+elif mfi_v < 40:
+    bear_score += 1; signals.append((f"❌ MFI bearish ({mfi_v:.1f})", "bear"))
+else:
+    signals.append((f"⚠️ MFI neutral ({mfi_v:.1f})", "neutral"))
+
+# — Volatility context —
+if adx_strong:
+    signals.append((f"✅ ADX strong trend ({adx_v:.1f}) — trend-follow OK", "bull" if bull_score > bear_score else "bear"))
+elif adx_trending:
+    signals.append((f"⚠️ ADX moderate ({adx_v:.1f}) — light trend present", "neutral"))
+elif adx_very_weak:
+    signals.append((f"⚠️ ADX very weak ({adx_v:.1f}) — choppy/range market", "neutral"))
+else:
+    signals.append((f"⚠️ ADX weak ({adx_v:.1f}) — range market, avoid trend signals", "neutral"))
+
+# ── RANGE / CHOP DETECTION ──
+range_evidence = []
+if adx_very_weak:
+    range_evidence.append(f"ADX={adx_v:.1f} (< 15, no trend)")
+if ema_compressed:
+    range_evidence.append(f"EMA spread={ema_spread_pct:.1f}% (< 1.5%, EMAs converging)")
+if bb_squeeze:
+    range_evidence.append(f"BB squeeze (bands tighter than {bb_width_avg*100:.1f}% avg)")
+
+is_range_market = len(range_evidence) >= 2
+
+if is_range_market:
+    strategy_mode = "MEAN REVERSION"
+elif adx_v > 20 and adx_rising:
+    strategy_mode = "TREND FOLLOWING"
+else:
+    strategy_mode = "NO TRADE"
+
+mid_price = (last["Support"] + last["Resistance"]) / 2
+mid_range = abs(price_cur - mid_price) < (atr_v * 1.2)
+is_weak_trend = not adx_trending
+
+# ── RAW SIGNAL ──
+total    = bull_score + bear_score
+bull_pct = int((bull_score / max(total, 1)) * 100)
+
+if bull_score >= 9:
+    raw_signal = "STRONG BUY"
+elif bull_score >= 6:
+    raw_signal = "BUY"
+elif bear_score >= 9:
+    raw_signal = "STRONG SELL"
+elif bear_score >= 6:
+    raw_signal = "SELL"
+else:
+    raw_signal = "WAIT"
+
+# ── FINAL SIGNAL WITH ALL FILTERS ──
+final_signal   = raw_signal
+signal_override = None
+
+# 1. STRUCTURE FILTER
+if strategy_mode == "NO TRADE":
+    final_signal    = "WAIT"
+    signal_override = "⚠️ No clear structure. Skip trades."
+
+# 2. RANGE LOGIC
+elif is_range_market:
+    if mid_range:
+        final_signal    = "WAIT"
+        signal_override = "⚠️ Mid-range. No edge. Avoid trades."
+    else:
+        final_signal = "RANGE"
+        if raw_signal in ["BUY", "STRONG BUY"]:
+            signal_override = "📦 Range: Buy ONLY near support."
+        elif raw_signal in ["SELL", "STRONG SELL"]:
+            signal_override = "📦 Range: Sell ONLY near resistance."
+        else:
+            signal_override = "📦 Sideways market. Wait for extremes."
+
+# 2.5 PULLBACK DETECTION
+elif pullback_active and price_cur < ema200_v:
+    final_signal    = "PULLBACK"
+    signal_override = "⚠️ Bearish trend + bullish pullback. Wait for short entry."
+
+# 3. WEAK TREND ADJUSTMENT
+elif is_weak_trend:
+    if raw_signal == "STRONG BUY":
+        final_signal    = "BUY"
+        signal_override = f"⚠️ Weak trend (ADX={adx_v:.1f}). Reduced confidence."
+    elif raw_signal == "STRONG SELL":
+        final_signal    = "SELL"
+        signal_override = f"⚠️ Weak trend (ADX={adx_v:.1f}). Reduced confidence."
+
+# 4. MOMENTUM CONFLICT FILTER
+momentum_conflict_bear = (rsi_v > 60 and macd_v > macd_sig)
+momentum_conflict_bull = (rsi_v < 40 and macd_v < macd_sig)
+
+if "SELL" in final_signal and momentum_conflict_bear:
+    final_signal    = "WAIT"
+    signal_override = "⚠️ Bearish setup but momentum bullish. Wait."
+
+if "BUY" in final_signal and momentum_conflict_bull:
+    final_signal    = "WAIT"
+    signal_override = "⚠️ Bullish setup but momentum weak. Wait."
+
+# 5. ADX QUALITY FILTER
+if adx_v < 18:
+    final_signal    = "WAIT"
+    signal_override = f"⚠️ ADX={adx_v:.1f} → No real trend."
+elif adx_v < 22:
+    if "STRONG" in final_signal:
+        final_signal    = final_signal.replace("STRONG ", "")
+        signal_override = f"⚠️ ADX={adx_v:.1f} → Strength downgraded."
+
+# 6. ENTRY CONFIRMATION (SOFT)
+entry_warning = None
+if "SELL" in final_signal and not bearish_rejection:
+    entry_warning = "⚠️ Weak bearish candle confirmation"
+if "BUY" in final_signal and not bullish_rejection:
+    entry_warning = "⚠️ Weak bullish candle confirmation"
+
+# ── TRADE PLAN ──
+is_range = "RANGE" in final_signal
+is_buy   = "BUY"   in final_signal
+is_sell  = "SELL"  in final_signal
+rr       = 2.5
+entry, sl, target, target2 = None, None, None, None
+
+if is_buy and not is_range:
+    entry   = price_cur
+    sl      = price_cur - (atr_v * 1.5)
+    target  = price_cur + (atr_v * rr)
+    target2 = price_cur + (atr_v * rr * 1.6)
+elif is_sell and not is_range:
+    entry   = price_cur
+    sl      = price_cur + (atr_v * 1.5)
+    target  = price_cur - (atr_v * rr)
+    target2 = price_cur - (atr_v * rr * 1.6)
+
 # ---------------------------
-# INDICATOR SELECTOR
+# INDICATOR SELECTOR + CHART
 # ---------------------------
 st.subheader("📈 Advanced Chart")
 
@@ -327,22 +583,10 @@ selected = st.multiselect(
     default=["EMA", "RSI", "MACD"]
 )
 
-def add_label(fig, x, y, name, row):
-    y_clean = y.dropna()
-    if y_clean.empty:
-        return
-    fig.add_annotation(
-        x=x[-1], y=y_clean.iloc[-1],
-        text=f"{name}: {y_clean.iloc[-1]:.2f}",
-        showarrow=False, xanchor="left",
-        bgcolor="#111827", bordercolor="gray",
-        font=dict(size=10), row=row, col=1
-    )
-
 lower_panels = []
 if any(x in selected for x in ["RSI", "Stoch RSI", "Williams %R", "MFI"]):
     lower_panels.append("momentum")
-if any(x in selected for x in ["MACD"]):
+if "MACD" in selected:
     lower_panels.append("macd")
 if any(x in selected for x in ["Volume", "OBV", "CMF"]):
     lower_panels.append("volume")
@@ -420,11 +664,11 @@ if "Pivot Points" in selected:
                                   line=dict(color=color, width=1, dash="dot")), row=1, col=1)
 
 if "Supertrend" in selected:
-    bull = df["Supertrend"].where(df["ST_Dir"] == 1)
-    bear = df["Supertrend"].where(df["ST_Dir"] == -1)
-    fig.add_trace(go.Scatter(x=df.index, y=bull, name="ST Bull",
+    bull_st = df["Supertrend"].where(df["ST_Dir"] == 1)
+    bear_st = df["Supertrend"].where(df["ST_Dir"] == -1)
+    fig.add_trace(go.Scatter(x=df.index, y=bull_st, name="ST Bull",
                               line=dict(color="#00FF7F", width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=bear, name="ST Bear",
+    fig.add_trace(go.Scatter(x=df.index, y=bear_st, name="ST Bear",
                               line=dict(color="#FF4500", width=2)), row=1, col=1)
 
 if "PSAR" in selected:
@@ -541,12 +785,12 @@ volume   = fast.get("lastVolume")
 if isinstance(price, (int, float)) and isinstance(prev, (int, float)):
     change     = price - prev
     change_pct = (change / prev) * 100
-    delta      = f"{change:+.2f} ({change_pct:+.2f}%)"
+    delta_str  = f"{change:+.2f} ({change_pct:+.2f}%)"
 else:
-    delta = None
+    delta_str = None
 
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Price", format_price(price), delta)
+c1.metric("Price", format_price(price), delta_str)
 c2.metric("Day High", format_price(high))
 c3.metric("Day Low", format_price(low))
 c4.metric("Prev Close", format_price(prev))
@@ -557,310 +801,15 @@ if isinstance(mkt_cap, (int, float)):
     st.caption(f"Market Cap: {symbol} {mkt_cap:,.0f}")
 
 # ===========================================================
-# 🧠 MULTI-FACTOR DECISION ENGINE  (FIXED & ENHANCED)
+# 🧠 DECISION ENGINE DISPLAY
 # ===========================================================
 st.subheader("🧠 Multi-Factor Decision Engine")
 
-last      = df.iloc[-1]
-price_cur = last["Close"]
-ema20_v   = last["EMA20"]
-ema50_v   = last["EMA50"]
-ema200_v  = last["EMA200"]
-rsi_v     = last["RSI"]
-macd_v    = last["MACD"]
-macd_sig  = last["MACD_Signal"]
-adx_v     = last["ADX"]
-atr_v     = last["True_ATR"]
-bb_pct    = last["BB_Pct"]
-cmf_v     = last["CMF"] if not pd.isna(last["CMF"]) else 0
-obv_slope = df["OBV"].iloc[-1] - df["OBV"].iloc[-5] if len(df) > 5 else 0
-cci_v     = last["CCI"] if not pd.isna(last["CCI"]) else 0
-mfi_v     = last["MFI"] if not pd.isna(last["MFI"]) else 50
-will_r    = last["WilliamsR"] if not pd.isna(last["WilliamsR"]) else -50
-st_dir    = last["ST_Dir"]
-psar_v    = last["PSAR"]
-# Candle structure (entry confirmation)
-last_candle = df.iloc[-1]
-
-upper_wick = last_candle["High"] - max(last_candle["Close"], last_candle["Open"])
-lower_wick = min(last_candle["Close"], last_candle["Open"]) - last_candle["Low"]
-body = abs(last_candle["Close"] - last_candle["Open"])
-
-bearish_rejection = upper_wick > body * 1.5 and last_candle["Close"] < last_candle["Open"]
-bullish_rejection = lower_wick > body * 1.5 and last_candle["Close"] > last_candle["Open"]
-
-entry, sl, target, target2 = None, None, None, None
-rr = 2.5
-
-is_range = "RANGE" in final_signal
-is_buy   = "BUY" in final_signal
-is_sell  = "SELL" in final_signal
-
-if is_buy and not is_range:
-    entry   = price_cur
-    sl      = price_cur - (atr_v * 1.5)
-    target  = price_cur + (atr_v * rr)
-    target2 = price_cur + (atr_v * rr * 1.6)
-
-elif is_sell and not is_range:
-    entry   = price_cur
-    sl      = price_cur + (atr_v * 1.5)
-    target  = price_cur - (atr_v * rr)
-    target2 = price_cur - (atr_v * rr * 1.6)
-# ── MARKET STRUCTURE ANALYSIS ──
-# Detect range / sideways condition
-# ADX < 20 = no trend; 15-25 = transitional; >25 = trending
-adx_trending  = adx_v > 20
-adx_strong    = adx_v > 25
-adx_very_weak = adx_v < 15
-# ADX slope (trend strength direction)
-adx_slope = df["ADX"].iloc[-1] - df["ADX"].iloc[-5] if len(df) > 5 else 0
-adx_rising = adx_slope > 0
-
-# Price range tightness: how wide is BB relative to its mean (squeeze detection)
-bb_width_now  = last["BB_Width"] if not pd.isna(last["BB_Width"]) else 0
-bb_width_avg  = df["BB_Width"].rolling(50).mean().iloc[-1] if not pd.isna(df["BB_Width"].rolling(50).mean().iloc[-1]) else bb_width_now
-bb_squeeze    = bb_width_now < bb_width_avg * 0.7  # BB tighter than 70% of average = range
-
-# EMA compression: all EMAs within tight band = range
-ema_spread_pct = abs(ema20_v - ema50_v) / (ema50_v + 1e-10) * 100
-ema_compressed = ema_spread_pct < 1.5  # EMAs within 1.5% of each other
-
-# Pullback detection (IMPROVED)
-pullback_active = (
-    price_cur > ema20_v and
-    price_cur < ema50_v and
-    rsi_v > 50 and
-    macd_v > macd_sig
-)
-
-
-
-
-# ── SCORING SYSTEM ──
-bull_score = 0
-bear_score = 0
-signals    = []
-
-# — Trend (max 6 points) —
-if price_cur > ema200_v:
-    bull_score += 2; signals.append(("✅ Price > EMA200 (Uptrend)", "bull"))
-else:
-    bear_score += 2; signals.append(("❌ Price < EMA200 (Downtrend)", "bear"))
-
-if ema20_v > ema50_v > ema200_v:
-    bull_score += 2; signals.append(("✅ EMA stack bullish (20>50>200)", "bull"))
-elif ema20_v < ema50_v < ema200_v:
-    bear_score += 2; signals.append(("❌ EMA stack bearish (20<50<200)", "bear"))
-else:
-    signals.append(("⚠️ EMA stack mixed — possible transition/range", "neutral"))
-
-if st_dir == 1:
-    bull_score += 1; signals.append(("✅ Supertrend Bullish", "bull"))
-else:
-    bear_score += 1; signals.append(("❌ Supertrend Bearish", "bear"))
-
-if price_cur > psar_v:
-    bull_score += 1; signals.append(("✅ Price above PSAR", "bull"))
-else:
-    bear_score += 1; signals.append(("❌ Price below PSAR", "bear"))
-
-# — Momentum (max 4 points) —
-if 50 < rsi_v < 70:
-    bull_score += 2; signals.append((f"✅ RSI bullish zone ({rsi_v:.1f})", "bull"))
-elif rsi_v > 70:
-    signals.append((f"⚠️ RSI Overbought ({rsi_v:.1f})", "neutral"))
-elif 30 < rsi_v < 50:
-    bear_score += 2; signals.append((f"❌ RSI bearish zone ({rsi_v:.1f})", "bear"))
-elif rsi_v < 30:
-    signals.append((f"⚠️ RSI Oversold ({rsi_v:.1f})", "neutral"))
-
-if macd_v > macd_sig:
-    bull_score += 1; signals.append(("✅ MACD bullish crossover", "bull"))
-else:
-    bear_score += 1; signals.append(("❌ MACD bearish crossover", "bear"))
-
-if -20 > will_r > -50:
-    bull_score += 1; signals.append((f"✅ Williams %R neutral-bull ({will_r:.1f})", "bull"))
-elif will_r > -20:
-    signals.append((f"⚠️ Williams %R Overbought ({will_r:.1f})", "neutral"))
-elif will_r < -80:
-    signals.append((f"⚠️ Williams %R Oversold ({will_r:.1f})", "neutral"))
-else:
-    bear_score += 1; signals.append((f"❌ Williams %R bearish zone ({will_r:.1f})", "bear"))
-
-# — Volume / Flow (max 3 points) —
-if cmf_v > 0.05:
-    bull_score += 1; signals.append(("✅ CMF positive (buying pressure)", "bull"))
-elif cmf_v < -0.05:
-    bear_score += 1; signals.append(("❌ CMF negative (selling pressure)", "bear"))
-else:
-    signals.append((f"⚠️ CMF near zero ({cmf_v:.3f}) — neutral flow", "neutral"))
-
-if obv_slope > 0:
-    bull_score += 1; signals.append(("✅ OBV rising (accumulation)", "bull"))
-else:
-    bear_score += 1; signals.append(("❌ OBV falling (distribution)", "bear"))
-
-if mfi_v > 60:
-    bull_score += 1; signals.append((f"✅ MFI bullish ({mfi_v:.1f})", "bull"))
-elif mfi_v < 40:
-    bear_score += 1; signals.append((f"❌ MFI bearish ({mfi_v:.1f})", "bear"))
-else:
-    signals.append((f"⚠️ MFI neutral ({mfi_v:.1f})", "neutral"))
-
-# — Volatility context (informational, no score) —
-if adx_strong:
-    signals.append((f"✅ ADX strong trend ({adx_v:.1f}) — trend-follow OK", "bull" if bull_score > bear_score else "bear"))
-elif adx_trending:
-    signals.append((f"⚠️ ADX moderate ({adx_v:.1f}) — light trend present", "neutral"))
-elif adx_very_weak:
-    signals.append((f"⚠️ ADX very weak ({adx_v:.1f}) — choppy/range market", "neutral"))
-else:
-    signals.append((f"⚠️ ADX weak ({adx_v:.1f}) — range market, avoid trend signals", "neutral"))
-
-# ── RANGE / CHOP DETECTION ──
-range_evidence = []
-if adx_very_weak:
-    range_evidence.append(f"ADX={adx_v:.1f} (< 15, no trend)")
-if ema_compressed:
-    range_evidence.append(f"EMA spread={ema_spread_pct:.1f}% (< 1.5%, EMAs converging)")
-if bb_squeeze:
-    range_evidence.append(f"BB squeeze (bands tighter than {bb_width_avg*100:.1f}% avg)")
-
-is_range_market = len(range_evidence) >= 2
-# Strategy mode
-if is_range_market:
-    strategy_mode = "MEAN REVERSION"
-elif adx_v > 20 and adx_rising:
-    strategy_mode = "TREND FOLLOWING"
-else:
-    strategy_mode = "NO TRADE"
-    # ── STRATEGY MODE OVERRIDE (NEW) ──
-
-mid_price = (last["Support"] + last["Resistance"]) / 2
-mid_range = abs(price_cur - mid_price) < (atr_v * 1.2)# 2 of 3 range signals = confirmed range
-is_weak_trend   = not adx_trending            # ADX < 20
-
-# ===========================================================
-# 🧠 CLEAN DECISION ENGINE (FINAL FIXED VERSION)
-# ===========================================================
-
-# ── RAW SIGNAL ──
-total     = bull_score + bear_score
-bull_pct  = int((bull_score / max(total, 1)) * 100)
-
-if bull_score >= 9:
-    raw_signal = "STRONG BUY"
-elif bull_score >= 6:
-    raw_signal = "BUY"
-elif bear_score >= 9:
-    raw_signal = "STRONG SELL"
-elif bear_score >= 6:
-    raw_signal = "SELL"
-else:
-    raw_signal = "WAIT"
-
-final_signal = "WAIT"
-# ── INITIAL ASSIGNMENT ──
-final_signal = raw_signal
-entry, sl, target, target2 = None, None, None, None
-rr = 2.5
-
-is_range = "RANGE" in final_signal
-is_buy   = "BUY" in final_signal
-is_sell  = "SELL" in final_signal
-signal_override = None
-
-# ===========================================================
-# 🧱 1. STRUCTURE FILTER (FIRST)
-# ===========================================================
-if strategy_mode == "NO TRADE":
-    final_signal = "WAIT"
-    signal_override = "⚠️ No clear structure. Skip trades."
-
-# ===========================================================
-# 📦 2. RANGE LOGIC (HIGHEST PRIORITY)
-# ===========================================================
-elif is_range_market:
-
-    if mid_range:
-        final_signal = "WAIT"
-        signal_override = "⚠️ Mid-range. No edge. Avoid trades."
-
-    else:
-        final_signal = "RANGE"
-
-        if raw_signal in ["BUY", "STRONG BUY"]:
-            signal_override = "📦 Range: Buy ONLY near support."
-        elif raw_signal in ["SELL", "STRONG SELL"]:
-            signal_override = "📦 Range: Sell ONLY near resistance."
-        else:
-            signal_override = "📦 Sideways market. Wait for extremes."
-# ===========================================================
-# 🔄 2.5 PULLBACK DETECTION (NEW)
-# ===========================================================
-elif pullback_active and price_cur < ema200_v:
-    final_signal = "PULLBACK"
-    signal_override = "⚠️ Bearish trend + bullish pullback. Wait for short entry."
-
-# ===========================================================
-# 📉 3. WEAK TREND ADJUSTMENT
-# ===========================================================
-elif is_weak_trend:
-
-    if raw_signal == "STRONG BUY":
-        final_signal = "BUY"
-        signal_override = f"⚠️ Weak trend (ADX={adx_v:.1f}). Reduced confidence."
-    elif raw_signal == "STRONG SELL":
-        final_signal = "SELL"
-        signal_override = f"⚠️ Weak trend (ADX={adx_v:.1f}). Reduced confidence."
-
-# ===========================================================
-# ⚡ 4. MOMENTUM CONFLICT FILTER (SMART)
-# ===========================================================
-momentum_conflict_bear = (rsi_v > 60 and macd_v > macd_sig)
-momentum_conflict_bull = (rsi_v < 40 and macd_v < macd_sig)
-
-if "SELL" in final_signal and momentum_conflict_bear:
-    final_signal = "WAIT"
-    signal_override = "⚠️ Bearish setup but momentum bullish. Wait."
-
-if "BUY" in final_signal and momentum_conflict_bull:
-    final_signal = "WAIT"
-    signal_override = "⚠️ Bullish setup but momentum weak. Wait."
-
-# ===========================================================
-# 📊 5. ADX QUALITY FILTER (FINAL GATE)
-# ===========================================================
-if adx_v < 18:
-    final_signal = "WAIT"
-    signal_override = f"⚠️ ADX={adx_v:.1f} → No real trend."
-
-elif adx_v < 22:
-    if "STRONG" in final_signal:
-        final_signal = final_signal.replace("STRONG ", "")
-        signal_override = f"⚠️ ADX={adx_v:.1f} → Strength downgraded."
-
-# ===========================================================
-# 🎯 6. ENTRY CONFIRMATION (SOFT ONLY)
-# ===========================================================
-entry_warning = None
-
-if "SELL" in final_signal and not bearish_rejection:
-    entry_warning = "⚠️ Weak bearish candle confirmation"
-
-if "BUY" in final_signal and not bullish_rejection:
-    entry_warning = "⚠️ Weak bullish candle confirmation"
-    
 col_a, col_b = st.columns(2)
 
 with col_a:
-
-    # 🧭 Strategy Context
     st.caption(f"🧭 Strategy Mode: {strategy_mode}")
 
-    # 🎯 SIGNAL DISPLAY
     if final_signal == "STRONG BUY":
         st.success(f"🚀 {final_signal}")
     elif final_signal == "BUY":
@@ -876,11 +825,9 @@ with col_a:
     else:
         st.warning("⚠️ WAIT — No Clear Setup")
 
-    # ⚠️ Entry Confirmation
     if entry_warning:
         st.warning(entry_warning)
 
-    # 🔔 Override Display
     if signal_override:
         st.markdown(f"""
         <div style="background:#1a1f2e; border-left:4px solid #FFD700; border-radius:6px; padding:10px 14px; margin-top:8px;">
@@ -888,13 +835,11 @@ with col_a:
         </div>
         """, unsafe_allow_html=True)
 
-    # 📊 Metrics (INSIDE column, not global)
     m1, m2, m3 = st.columns(3)
     m1.metric("Bull Score", f"{bull_score}", f"{bull_pct}% bullish")
     m2.metric("Bear Score", f"{bear_score}", f"{100-bull_pct}% bearish")
     m3.metric("ADX", f"{adx_v:.1f}", "Trending" if adx_trending else "Range")
 
-    # 🎯 Trade Plan
     if entry and not is_range:
         st.markdown(f"""
         | Level | Price |
@@ -905,7 +850,6 @@ with col_a:
         | Target 2 | {symbol}{target2:.2f} |
         | R:R Ratio | 1:{rr} |
         """)
-
     elif is_range:
         st.markdown(f"""
         **📦 Range Trade Levels**
@@ -917,9 +861,7 @@ with col_a:
         """)
         st.info("💡 Buy support, sell resistance. Avoid mid-zone.")
 
-
 with col_b:
-
     st.markdown("**Signal Breakdown**")
 
     if range_evidence:
@@ -929,7 +871,6 @@ with col_b:
 
     for s in signals:
         text, stype = s if isinstance(s, tuple) else (s, "neutral")
-
         if stype == "bull":
             st.success(text)
         elif stype == "bear":
@@ -951,7 +892,14 @@ col_c3.metric("Market Mode",      "RANGE" if is_range_market else ("WEAK TREND" 
 col_c4.metric("Tradeable?",       "⚠️ CAUTION" if (is_range_market or is_weak_trend) else "✅ YES")
 
 timeframe_data = {
-    "Timeframe / Factor": ["Primary Trend (EMA200, Stack)", "Short-Term Momentum (RSI, MACD)", "Volume Flow (OBV, CMF, MFI)", "Trend Strength (ADX)", "Volatility (BB, Squeeze)", "Net Assessment"],
+    "Timeframe / Factor": [
+        "Primary Trend (EMA200, Stack)",
+        "Short-Term Momentum (RSI, MACD)",
+        "Volume Flow (OBV, CMF, MFI)",
+        "Trend Strength (ADX)",
+        "Volatility (BB, Squeeze)",
+        "Net Assessment"
+    ],
     "Reading": [
         "Bearish" if price_cur < ema200_v and ema20_v < ema200_v else "Bullish",
         "Bearish" if rsi_v < 50 and macd_v < macd_sig else ("Bullish" if rsi_v > 50 and macd_v > macd_sig else "Mixed"),
@@ -961,9 +909,9 @@ timeframe_data = {
         final_signal
     ],
     "Action Implication": [
-        "Avoid longs, short bias",
-        "Weak selling / possible bounce forming",
-        "Smart money buying — watch for reversal",
+        "Avoid longs, short bias" if price_cur < ema200_v else "Long bias",
+        "Weak selling / possible bounce forming" if rsi_v < 50 else "Momentum supportive",
+        "Smart money buying — watch for reversal" if obv_slope > 0 and cmf_v > 0 else "Distribution in progress",
         "⚠️ Weak ADX = unreliable trend signals" if not adx_trending else "Trend signals more reliable",
         "Range trade: fade extremes" if bb_squeeze else "Breakout may be coming",
         "Range-bound: buy support, sell resistance" if is_range_market else final_signal
@@ -973,7 +921,6 @@ timeframe_data = {
 conflict_df = pd.DataFrame(timeframe_data)
 st.dataframe(conflict_df, use_container_width=True, hide_index=True)
 
-# ── PRO INTERPRETATION NOTE ──
 with st.expander("🎓 Pro Interpretation — What This Market Is Saying"):
     if is_range_market:
         st.markdown(f"""
@@ -1058,6 +1005,7 @@ snap_data = {
 
 snap_df = pd.DataFrame(snap_data)
 st.dataframe(snap_df, use_container_width=True, hide_index=True)
+
 # ---------------------------
 # 💼 PORTFOLIO TRACKER
 # ---------------------------
@@ -1097,11 +1045,11 @@ try:
             worst_day= df_port["Close"].pct_change().min() * 100
 
             c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Invested",  f"{symbol}{invested:,.2f}")
-            c2.metric("Current",   f"{symbol}{current:,.2f}")
-            c3.metric("P&L",       f"{symbol}{pnl:,.2f}", f"{pnl_pct:.2f}%")
+            c1.metric("Invested",     f"{symbol}{invested:,.2f}")
+            c2.metric("Current",      f"{symbol}{current:,.2f}")
+            c3.metric("P&L",          f"{symbol}{pnl:,.2f}", f"{pnl_pct:.2f}%")
             c4.metric("Max Drawdown", f"{max_dd:.2f}%")
-            c5.metric("Best Day",  f"{best_day:.2f}%")
+            c5.metric("Best Day",     f"{best_day:.2f}%")
 
             st.markdown("### 📈 Portfolio Performance")
             color_line = "green" if current > invested else "red"
@@ -1116,7 +1064,6 @@ try:
             st.plotly_chart(fig2, use_container_width=True)
 
             st.subheader("🧠 Portfolio Insight")
-
             if pnl_pct < -30:
                 st.error("⚠️ Heavy Loss Zone — Risk very high. Consider reviewing position sizing.")
             elif pnl_pct < -10:
@@ -1194,8 +1141,7 @@ The signal is generated by scoring **12 independent factors** across 4 categorie
 | **Volume/Flow** | CMF, OBV, MFI | 3 |
 | **Volatility** | ADX | Contextual |
 
-### ADX Gate (NEW in v2)
-Raw score signals are now filtered through an **ADX gate**:
+### ADX Gate (v2)
 
 | Condition | What happens |
 |-----------|-------------|
@@ -1204,25 +1150,18 @@ Raw score signals are now filtered through an **ADX gate**:
 | ADX > 20 | → Trust the directional signal |
 | ADX > 25 | → Full confidence in trend direction |
 
-### ML Reliability Guard (NEW in v2)
-ML predictions are now tagged with accuracy:
-
-- **Accuracy < 50%**: Model flagged as UNRELIABLE — prediction discarded
-- **Accuracy 50–53%**: Low confidence warning shown
-- **Accuracy > 53%**: Prediction shown normally
-
-### Range Detection (NEW in v2)
+### Range Detection
 Range market is confirmed when **2 of 3** signals trigger:
 1. ADX < 15 (no trend strength)
 2. BB bandwidth < 70% of rolling average (squeeze)
 3. EMA 20/50 spread < 1.5% (EMAs converging)
 
-**Signal Thresholds (unchanged):**
+**Signal Thresholds:**
 - STRONG BUY → Bull Score ≥ 9 + ADX > 20
 - BUY → Bull Score ≥ 6
 - STRONG SELL → Bear Score ≥ 9 + ADX > 20
 - SELL → Bear Score ≥ 6
-- RANGE-BOUND → 2/3 range signals triggered (overrides above)
+- RANGE-BOUND → 2/3 range signals triggered
 - WAIT → No clear majority
 
 **Trade Plan (ATR-based):**
